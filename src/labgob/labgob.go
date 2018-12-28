@@ -15,6 +15,7 @@ import "sync"
 import "unicode"
 import "unicode/utf8"
 
+
 var mu sync.Mutex
 var errorCount int // for TestCapital
 var checked map[reflect.Type]bool
