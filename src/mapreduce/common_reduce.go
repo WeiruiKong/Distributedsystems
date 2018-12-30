@@ -1,10 +1,9 @@
 package mapreduce
 
 import (
-	"io/ioutil"
-	"fmt"
 	"os"
 	"encoding/json"
+	"sort"
 )
 
 func doReduce(
@@ -56,15 +55,11 @@ func doReduce(
 
 	for i := 0; i<nMap; i++ {
 		fileName := reduceName(jobName, i, reduceTask)
-		files[i], err = os.Open(fileName)
+		files[i], _ = os.Open(fileName)
 		defer files[i].Close()
-		if err != nil {
-			fmt.Println("File reading error", err)
-			return
-		}
 	}
 
-	map := make(map[string][]string)
+	myMap := make(map[string][]string)
 
 	for _, file := range files {
 		dec := json.NewDecoder(file)
@@ -74,26 +69,23 @@ func doReduce(
 			if err != nil {
 				break;
 			}
-			map[kv.Key] = append(map[kv.Key], kv.Value)
+			myMap[kv.Key] = append(myMap[kv.Key], kv.Value)
 		}
 	}
 
-	keys := make([]string, 0, len(map))
+	keys := make([]string, 0)
 
-	for key := range map {
-		keys = append(keys, key)
+	for k := range myMap {
+		keys = append(keys, k)
 	}
 
 	sort.Strings(keys)
 
-	out, err = os.create(outFile)
-	if err != nil {
-		fmt.Println("Create output file error")
-	}
+	out, _ := os.Create(outFile)
 	enc := json.NewEncoder(out)
 
 	for _, key := range keys {
-		kv := KeyValue{key, reduceF(key, map[key])}
+		kv := KeyValue{key, reduceF(key, myMap[key])}
 		enc.Encode(kv)
 	}
 
