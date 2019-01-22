@@ -60,6 +60,8 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+
+	applyCh chan ApplyMsg         // Used to apply logs
 	state int                     // Indicates the status of this server 
 	currentTerm int               // Current term this server is in   
 	logs []*Log                   // Sequence of logs 
@@ -70,13 +72,18 @@ type Raft struct {
 	becomeLeaderChan chan int     // Indicate the server now becomes the leader
 	exitCh chan int               // Used to exit
 
-	leaderCommit int              // Leader's commit index
+	commitIndex int               // Commit index
+	lastApplied int               // Index of highest log entry applied to state machine
+
+	nextIndex []int               // for each server, index of the next log entry to send to that server
+	matchIndex []int              // for each server, index of highest log entry known to be replicated on server
 }
 
 // Log structure to store operation
 type Log struct {
 	Term int
 	Index int
+	Command interface{}
 }
 
 // return currentTerm and whether this server
@@ -350,12 +357,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.logs = make([]*Log, 0)
 	rf.votedFor = -1
 
+    rf.applyCh = applyCh
     rf.appendChan = make(chan int)
     rf.voteChan = make(chan int)
     rf.becomeLeaderChan = make(chan int)
     rf.exitCh = make(chan int)
-    
-    rf.leaderCommit = 0
+
+    rf.commitIndex = 0
+    rf.lastApplied = 0
+    rf.nextIndex = make([]int, len(rf.peers))
+    rf.matchIndex = make([]int, len(rf.peers))
 
     go func() {
 
@@ -395,7 +406,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
     		    }
 
     		case Leader:
-    			go rf.startHeartBeat()
+    			go rf.startAppendEntries()
     			select {
     			case <-time.After(100 * time.Millisecond):
     			case <-rf.appendChan:
@@ -463,7 +474,6 @@ func (rf *Raft) startLeaderElection () {
 
             // If receive votes, update voteCount and check if wins the election
 			if reply.VoteGranted {
-
 				countMutex.Lock()
 				voteCount = voteCount + 1
 				countMutex.Unlock()
@@ -480,14 +490,14 @@ func (rf *Raft) startLeaderElection () {
 	}
 }
 
-func (rf *Raft) startHeartBeat () {
+func (rf *Raft) startAppendEntries () {
 
 	rf.mu.Lock()
 	currentTerm := rf.currentTerm
 	prevLogIndex := -1
 	prevLogTerm := -1
 	entries := make([] *Log, 0)
-	leaderCommit := rf.leaderCommit
+	leaderCommit := rf.commitIndex
 	rf.mu.Unlock()
 
 	request := AppendEntriesArgs{currentTerm, rf.me, prevLogIndex, prevLogTerm, entries, leaderCommit}
