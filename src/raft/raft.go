@@ -64,11 +64,13 @@ type Raft struct {
 	currentTerm int               // Current term this server is in   
 	logs []*Log                   // Sequence of logs 
 	votedFor int                  // Server id that current server vote for within current term
+
 	appendChan chan int           // Append channel used to inform appendRpc received
 	voteChan chan int             // Vote channel used to inform request vote received
 	becomeLeaderChan chan int     // Indicate the server now becomes the leader
-	leaderCommit int              // Leader's commit index
 	exitCh chan int               // Used to exit
+
+	leaderCommit int              // Leader's commit index
 }
 
 // Log structure to store operation
@@ -177,6 +179,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
     reply.Term = rf.currentTerm
 	reply.VoteGranted = false
 
+	signal := false
+
     // If current term is larger that of candidate's, the candidate is out of date, 
     // return false.
 	if rf.currentTerm > args.Term {
@@ -189,6 +193,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.currentTerm < args.Term {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		signal = true
+		rf.voteChan <- 1
 	}
 
     // If current server has voted within this term and the voted server is 
@@ -204,10 +210,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 		fmt.Printf("Server %v votes for Server %v at term %v.\n", rf.me, args.CandidateId, rf.currentTerm)
-		rf.voteChan <- 1
-		return
-	}else {
-		fmt.Printf("NO REASON\n")
+		if !signal {
+			rf.voteChan <- 1
+		}
 	}
 }
 
@@ -344,10 +349,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0   
 	rf.logs = make([]*Log, 0)
 	rf.votedFor = -1
+
     rf.appendChan = make(chan int)
     rf.voteChan = make(chan int)
     rf.becomeLeaderChan = make(chan int)
     rf.exitCh = make(chan int)
+    
     rf.leaderCommit = 0
 
     go func() {
@@ -432,36 +439,44 @@ func (rf *Raft) startLeaderElection () {
 			continue
 		}
 
-		reply := RequestVoteReply{}
+		go func (server int) {
 
-		go func (reply RequestVoteReply, server int) {
+			reply := RequestVoteReply{}
 			res := rf.sendRequestVote(server, &request, &reply)
-			if res {
+
+            // If did not reveive a valid response, return
+			if !res {
+				return
+			}
+
+			// If this server is out-of-date, convert back to Follower
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+
+			if reply.Term > rf.currentTerm {
+				fmt.Printf("Server %v converts back to Follower because out-of-date", rf.me)
+				rf.currentTerm = reply.Term
+				rf.votedFor = -1
+				rf.voteChan <- 1
+				return
+			}
+
+            // If receive votes, update voteCount and check if wins the election
+			if reply.VoteGranted {
+
 				countMutex.Lock()
 				voteCount = voteCount + 1
 				countMutex.Unlock()
 
-				rf.mu.Lock()
 	            if rf.state == Candidate && rf.currentTerm == currentTerm && voteCount >= len(rf.peers) / 2 {
+	            	fmt.Printf("Server %v becomes the leader, term is %v.\n", rf.me, rf.currentTerm)
 	            	rf.votedFor = -1
-		            fmt.Printf("Server %v becomes the leader, term is %v.\n", rf.me, rf.currentTerm)
-		            rf.mu.Unlock()
 		            rf.becomeLeaderChan <- 1
-		        }else {
-		        	rf.mu.Unlock()
 		        } 
 
-			} else {
-				// If this server is out-of-date, convert back to Follower
-				rf.mu.Lock()
-				if reply.Term > rf.currentTerm {
-					fmt.Printf("Server %v converts back to Follower because out-of-date", rf.me)
-					rf.currentTerm = reply.Term
-					rf.voteChan <- 1
-				}
-				rf.mu.Unlock()
 			}
-		}(reply, i)
+
+		}(i)
 	}
 }
 
