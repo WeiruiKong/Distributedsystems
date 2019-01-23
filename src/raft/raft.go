@@ -64,7 +64,7 @@ type Raft struct {
 	applyCh chan ApplyMsg         // Used to apply logs
 	state int                     // Indicates the status of this server 
 	currentTerm int               // Current term this server is in   
-	logs []*Log                   // Sequence of logs 
+	logs []Log                   // Sequence of logs 
 	votedFor int                  // Server id that current server vote for within current term
 
 	appendChan chan int           // Append channel used to inform appendRpc received
@@ -198,8 +198,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
     // If term of args is larger than current term, this server is out-of-date, then it 
     // reset current term and its votedFor variable
 	if rf.currentTerm < args.Term {
-		rf.currentTerm = args.Term
-		rf.votedFor = -1
+		rf.backToFollower(args.Term, -1)
 		signal = true
 		rf.voteChan <- 1
 	}
@@ -215,7 +214,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if (args.LastLogTerm > rf.getLastLogTerm() || 
 		(args.LastLogTerm == rf.getLastLogTerm() && args.LastLogIndex >= rf.getLastLogIndex())) {
 		reply.VoteGranted = true
-		rf.votedFor = args.CandidateId
+		rf.backToFollower(rf.currentTerm, args.CandidateId)
 		fmt.Printf("Server %v votes for Server %v at term %v.\n", rf.me, args.CandidateId, rf.currentTerm)
 		if !signal {
 			rf.voteChan <- 1
@@ -240,6 +239,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 	}
+	rf.state = Follower
 	rf.appendChan <- 1
 }
 
@@ -312,12 +312,18 @@ func (rf *Raft) sendHeartBeat(server int, args *AppendEntriesArgs, reply *Append
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	term := rf.currentTerm
+	isLeader := rf.state == Leader
 	index := -1
-	term := -1
-	isLeader := true
+	//index := isLeader? rf.getLastLogIndex() + 1 : -1
 
-	// Your code here (2B).
-
+	if isLeader {
+		rf.logs = append(rf.logs, Log{term, index, command})
+	}
 
 	return index, term, isLeader
 }
@@ -355,7 +361,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.state = Follower
 	rf.currentTerm = 0   
-	rf.logs = make([]*Log, 0)
+	rf.logs = make([]Log, 0)
 	rf.votedFor = -1
 
     rf.applyCh = applyCh
@@ -388,7 +394,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
     		case Follower:
     			select {
     			case <-time.After(time.Duration(timeOut) * time.Millisecond):
+    				rf.mu.Lock()
     				rf.state = Candidate
+    				rf.mu.Unlock()
     			case <-rf.appendChan:
     		    case <-rf.voteChan:
     		    }
@@ -399,9 +407,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
     			select {
     			case <-time.After(time.Duration(timeOut) * time.Millisecond):
     			case <-rf.appendChan:
-    				rf.state = Follower
     		    case <-rf.voteChan:
-    		    	rf.state = Follower
     		    case <-rf.becomeLeaderChan:
     		    }
 
@@ -410,9 +416,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
     			select {
     			case <-time.After(100 * time.Millisecond):
     			case <-rf.appendChan:
-    				rf.state = Follower
     			case <-rf.voteChan:
-    				rf.state = Follower
     			}
     		}
         }
@@ -466,8 +470,7 @@ func (rf *Raft) startLeaderElection () {
 
 			if reply.Term > rf.currentTerm {
 				fmt.Printf("Server %v converts back to Follower because out-of-date", rf.me)
-				rf.currentTerm = reply.Term
-				rf.votedFor = -1
+				rf.backToFollower(reply.Term, -1)
 				rf.voteChan <- 1
 				return
 			}
@@ -512,4 +515,10 @@ func (rf *Raft) startAppendEntries () {
 			rf.sendHeartBeat(server, &request, &reply)
 		}(reply, i)
 	}
+}
+
+func (rf *Raft) backToFollower (term int, votedFor int) {
+	rf.currentTerm = term
+	rf.votedFor = votedFor
+	rf.state = Follower
 }
