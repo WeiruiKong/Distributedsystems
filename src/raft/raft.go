@@ -238,6 +238,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Success = true
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
+		rf.votedFor = -1
 	}
 	rf.appendChan <- 1
 }
@@ -402,7 +403,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
     		    case <-rf.voteChan:
     		    	rf.state = Follower
     		    case <-rf.becomeLeaderChan:
-    		    	rf.state = Leader
     		    }
 
     		case Leader:
@@ -481,6 +481,7 @@ func (rf *Raft) startLeaderElection () {
 	            if rf.state == Candidate && rf.currentTerm == currentTerm && voteCount >= len(rf.peers) / 2 {
 	            	fmt.Printf("Server %v becomes the leader, term is %v.\n", rf.me, rf.currentTerm)
 	            	rf.votedFor = -1
+	            	rf.state = Leader
 		            rf.becomeLeaderChan <- 1
 		        } 
 
